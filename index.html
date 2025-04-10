@@ -1,0 +1,717 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Blocky World Village - Enhanced</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #87CEEB; /* Sky Blue */ font-family: sans-serif; }
+        canvas#gameCanvas { display: block; }
+        #instructions {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 24px;
+            z-index: 10;
+            background-color: rgba(0, 0, 0, 0.7);
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            cursor: pointer;
+        }
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 4px;
+            height: 4px;
+            background-color: white;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none; /* Don't interfere */
+            z-index: 2;
+            display: none; /* Hidden until pointer lock */
+        }
+        /* --- UI Elements --- */
+        #hud {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            text-shadow: 1px 1px 2px black;
+            z-index: 1;
+            pointer-events: none; /* Allow clicks through HUD */
+        }
+        #coordinates { font-size: 14px; margin-bottom: 5px; }
+        #compass {
+            width: 50px;
+            height: 50px;
+            border: 1px solid white;
+            border-radius: 50%;
+            position: relative;
+            background-color: rgba(0,0,0,0.3);
+        }
+        #compass-needle {
+            width: 2px;
+            height: 20px;
+            background-color: red;
+            position: absolute;
+            top: 5px; /* (50px container height - 10px top margin - 20px needle height) / 2 + 10px top margin? No, just center it*/
+            left: 24px; /* (50px width - 2px width) / 2 */
+            transform-origin: 50% 20px; /* Rotate around bottom center */
+        }
+         #compass-n { position: absolute; top: 0; left: 50%; transform: translateX(-50%); font-size: 10px; }
+         /* --- Map --- */
+        #map-container {
+            position: absolute;
+            bottom: 10px;
+            right: 10px;
+            border: 1px solid white;
+            background-color: rgba(0,0,0,0.5);
+            z-index: 1;
+            pointer-events: none;
+        }
+        #mapCanvas { display: block; }
+         /* --- Settings Panel --- */
+        #settingsPanel {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: rgba(50, 50, 50, 0.9);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            z-index: 11; /* Above instructions if needed */
+            display: none; /* Initially hidden */
+            width: 300px;
+            box-shadow: 0 0 15px rgba(0,0,0,0.5);
+        }
+        #settingsPanel h2 { margin-top: 0; text-align: center; }
+        #settingsPanel label { display: block; margin: 10px 0 5px; }
+        #settingsPanel input[type="range"],
+        #settingsPanel input[type="number"] { width: calc(100% - 20px); margin-bottom: 10px; }
+        #settingsPanel button {
+            display: block;
+            margin: 15px auto 0;
+            padding: 8px 15px;
+            cursor: pointer;
+        }
+
+    </style>
+</head>
+<body>
+    <div id="instructions">
+        Click to Play<br/>
+        WASD: Move | MOUSE: Look | P: Settings | ESC: Release Mouse
+    </div>
+    <div id="crosshair"></div>
+
+    <!-- HUD Elements -->
+    <div id="hud">
+        <div id="coordinates">X: 0.0 Y: 0.0 Z: 0.0</div>
+        <div id="compass">
+            <div id="compass-needle"></div>
+            <div id="compass-n">N</div>
+        </div>
+    </div>
+
+    <!-- Map -->
+    <div id="map-container">
+        <canvas id="mapCanvas" width="150" height="150"></canvas>
+    </div>
+
+    <!-- Settings Panel -->
+    <div id="settingsPanel">
+        <h2>Settings</h2>
+        <label for="playerSpeed">Player Speed:</label>
+        <input type="range" id="playerSpeed" name="playerSpeed" min="1" max="20" value="8" step="0.5">
+        <span id="playerSpeedValue">8</span>
+
+        <label for="mouseSensitivity">Mouse Sensitivity:</label>
+        <input type="range" id="mouseSensitivity" name="mouseSensitivity" min="0.05" max="1.0" value="0.4" step="0.01">
+        <span id="mouseSensitivityValue">0.4</span>
+
+        <button id="closeSettings">Close</button>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <!-- Libraries (Keep these) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/PointerLockControls.js"></script>
+
+    <script>
+        // --- Global Variables ---
+        let scene, camera, renderer, controls;
+        let clock = new THREE.Clock();
+        let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false;
+        let velocity = new THREE.Vector3();
+        let direction = new THREE.Vector3();
+        let playerHeight = 1.8;
+        let playerSpeed = 8.0; // Now configurable
+        let playerMouseSensitivity = 0.4; // Now configurable
+        let worldObjects = []; // Keep track of static world features for map/collision later
+        let villagers = [];    // Keep track of villagers for movement/map
+
+        // UI Element References
+        let instructions, crosshair, coordsElement, compassNeedle, settingsPanel, mapCanvas, mapCtx;
+        let isPanelOpen = false;
+
+        // Map settings
+        const mapSize = 150; // pixels
+        const mapScale = 2.0; // pixels per world unit
+        const villageBounds = { minX: -15, maxX: 30, minZ: -15, maxZ: 30 }; // Approx village area for map and villager AI
+
+        // --- Initialization ---
+        function init() {
+            // Basic Scene Setup (same as before)
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB);
+            scene.fog = new THREE.Fog(0x87CEEB, 0, 100);
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.y = playerHeight;
+            renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('gameCanvas'), antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+            // Lighting (same as before)
+            const ambientLight = new THREE.AmbientLight(0xaaaaaa);
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(50, 100, 75);
+            directionalLight.castShadow = true;
+            directionalLight.shadow.mapSize.width = 1024;
+            directionalLight.shadow.mapSize.height = 1024;
+            directionalLight.shadow.camera.near = 0.5;
+            directionalLight.shadow.camera.far = 500;
+            directionalLight.shadow.camera.left = -100;
+            directionalLight.shadow.camera.right = 100;
+            directionalLight.shadow.camera.top = 100;
+            directionalLight.shadow.camera.bottom = -100;
+            scene.add(directionalLight);
+
+            // Controls (Pointer Lock) - Initialize sensitivity
+            controls = new THREE.PointerLockControls(camera, document.body);
+            controls.pointerSpeed = playerMouseSensitivity; // Apply initial sensitivity
+            scene.add(controls.getObject());
+
+            // Get UI Elements
+            instructions = document.getElementById('instructions');
+            crosshair = document.getElementById('crosshair');
+            coordsElement = document.getElementById('coordinates');
+            compassNeedle = document.getElementById('compass-needle');
+            settingsPanel = document.getElementById('settingsPanel');
+            mapCanvas = document.getElementById('mapCanvas');
+            mapCtx = mapCanvas.getContext('2d');
+
+            // --- Event Listeners ---
+            instructions.addEventListener('click', lockControls);
+
+            controls.addEventListener('lock', () => {
+                instructions.style.display = 'none';
+                crosshair.style.display = 'block';
+                if(isPanelOpen) toggleSettingsPanel(); // Close panel if it was open
+            });
+
+            controls.addEventListener('unlock', () => {
+                // Only show instructions if the panel is NOT open
+                if (!isPanelOpen) {
+                    instructions.style.display = 'block';
+                    crosshair.style.display = 'none';
+                }
+            });
+
+            document.addEventListener('keydown', onKeyDown);
+            document.addEventListener('keyup', onKeyUp);
+            window.addEventListener('resize', onWindowResize);
+
+            // Settings Panel Listeners
+            document.getElementById('closeSettings').addEventListener('click', toggleSettingsPanel);
+            const speedSlider = document.getElementById('playerSpeed');
+            const speedValueSpan = document.getElementById('playerSpeedValue');
+            speedSlider.addEventListener('input', (e) => {
+                playerSpeed = parseFloat(e.target.value);
+                speedValueSpan.textContent = playerSpeed.toFixed(1);
+            });
+             const sensitivitySlider = document.getElementById('mouseSensitivity');
+            const sensitivityValueSpan = document.getElementById('mouseSensitivityValue');
+            sensitivitySlider.addEventListener('input', (e) => {
+                playerMouseSensitivity = parseFloat(e.target.value);
+                sensitivityValueSpan.textContent = playerMouseSensitivity.toFixed(2);
+                if (controls) controls.pointerSpeed = playerMouseSensitivity; // Update live
+            });
+            // Set initial values display
+            speedSlider.value = playerSpeed;
+            speedValueSpan.textContent = playerSpeed.toFixed(1);
+            sensitivitySlider.value = playerMouseSensitivity;
+            sensitivityValueSpan.textContent = playerMouseSensitivity.toFixed(2);
+
+
+            // --- World Generation ---
+            createWorld();
+
+            // Start player inside village area
+            controls.getObject().position.set(5, playerHeight, 5);
+
+            // Initial Map Draw
+            drawMap(); // Draw static elements once
+
+            // Start the animation loop
+            animate();
+        }
+
+         function lockControls() {
+             controls.lock();
+         }
+
+        // --- World Creation Helpers ---
+
+        // Modified addBlock to store type for map
+        function addBlock(x, y, z, color, width = 1, height = 1, depth = 1, type = 'generic') {
+            const geometry = new THREE.BoxGeometry(width, height, depth);
+            const material = new THREE.MeshStandardMaterial({ color: color });
+            const block = new THREE.Mesh(geometry, material);
+            // Position based on center, not corner
+            block.position.set(x + width/2, y + height/2, z + depth/2);
+            block.castShadow = true;
+            block.receiveShadow = true;
+            block.userData = { type: type, color: color, width: width, depth: depth }; // Store info for map
+            scene.add(block);
+            worldObjects.push(block); // Add to general world objects
+            return block;
+        }
+
+        function createBuilding(x, y, z, width, height, depth, color) {
+            const wallColor = color;
+            const roofColor = 0xA0522D; // Sienna for roof
+
+             // Store a single object representing the building for the map
+             worldObjects.push({
+                position: new THREE.Vector3(x + width/2, y + height/2, z + depth/2), // Center position
+                userData: { type: 'building', color: wallColor, width: width, depth: depth }
+            });
+
+            // Walls (simplified)
+             for (let i = 0; i < width; i++) {
+                for (let j = 0; j < height; j++) {
+                    if (i === 0 || i === width - 1 || j === 0 || j === height -1 ) { // Only build outer shell for performance
+                         addBlock(x + i, y + j, z, wallColor, 1, 1, 1, 'building_wall');
+                         addBlock(x + i, y + j, z + depth - 1, wallColor, 1, 1, 1, 'building_wall');
+                    }
+                }
+             }
+              // Simple flat roof
+             for (let i = 0; i < width; i++) {
+                 for (let k = 0; k < depth; k++) {
+                     addBlock(x + i, y + height, z + k, roofColor, 1, 1, 1, 'building_roof');
+                 }
+             }
+        }
+
+        function createTree(x, y, z) {
+            const trunkHeight = 4 + Math.random() * 2;
+            const trunkColor = 0x8B4513;
+            const leavesColor = 0x008000;
+            const leavesSize = 3;
+            const leavesHeight = 3;
+
+             // Store a single object representing the tree for the map
+             worldObjects.push({
+                position: new THREE.Vector3(x + 0.5, y + trunkHeight/2, z + 0.5), // Approx center
+                userData: { type: 'tree', color: leavesColor, radius: leavesSize/2 } // Use radius for map marker
+            });
+
+            // Trunk
+            addBlock(x, y, z, trunkColor, 1, trunkHeight, 1, 'tree_trunk');
+
+            // Leaves (simplified for performance)
+            const leafBaseY = y + trunkHeight -1;
+             for (let lx = -Math.floor(leavesSize/2); lx < Math.ceil(leavesSize/2); lx++) {
+                 for (let ly = 0; ly < leavesHeight; ly++) {
+                     for (let lz = -Math.floor(leavesSize/2); lz < Math.ceil(leavesSize/2); lz++) {
+                         if (Math.random() > 0.3 || (lx === 0 && lz === 0)) {
+                             addBlock(x + lx, leafBaseY + ly, z + lz, leavesColor, 1, 1, 1, 'tree_leaves');
+                         }
+                     }
+                 }
+             }
+        }
+
+        function createFarm(x, y, z, width, depth) {
+             const soilColor = 0x5C4033;
+             const cropColor = 0x90EE90;
+             const waterColor = 0x4682B4;
+
+            // Store a single object representing the farm for the map
+             worldObjects.push({
+                position: new THREE.Vector3(x + width/2, y + 0.25, z + depth/2), // Center position
+                userData: { type: 'farm', color: soilColor, width: width, depth: depth }
+            });
+
+             for (let i = 0; i < width; i++) {
+                 for (let k = 0; k < depth; k++) {
+                    let blockColor = soilColor;
+                    let blockHeight = 0.1;
+                    let type = 'farm_soil';
+                    if (i % 2 === 0) {
+                         blockColor = cropColor;
+                         blockHeight = 0.5 + Math.random() * 0.3;
+                         type = 'farm_crop';
+                    } else if (k === Math.floor(depth / 2)) {
+                         blockColor = waterColor;
+                         blockHeight = 0.05;
+                         type = 'farm_water';
+                    }
+                    addBlock(x + i, y, z + k, blockColor, 1, blockHeight, 1, type);
+                 }
+             }
+        }
+
+         // Create a more distinct villager shape and add AI properties
+         function addVillager(x, y, z, color) {
+            const villagerGroup = new THREE.Group();
+            const bodyHeight = 1.3;
+            const headSize = 0.5;
+
+            // Body
+            const bodyGeo = new THREE.BoxGeometry(0.8, bodyHeight, 0.5);
+            const bodyMat = new THREE.MeshStandardMaterial({ color: color });
+            const body = new THREE.Mesh(bodyGeo, bodyMat);
+            body.castShadow = true;
+            body.receiveShadow = true;
+            body.position.y = bodyHeight / 2; // Position relative to group center
+            villagerGroup.add(body);
+
+            // Head
+            const headGeo = new THREE.BoxGeometry(headSize, headSize, headSize);
+            const headMat = new THREE.MeshStandardMaterial({ color: 0xFFDBAC }); // Skin tone
+            const head = new THREE.Mesh(headGeo, headMat);
+            head.castShadow = true;
+            head.receiveShadow = true;
+            head.position.y = bodyHeight + headSize / 2; // Position head on top of body
+            villagerGroup.add(head);
+
+            villagerGroup.position.set(x, y, z); // Set initial world position of the group
+            scene.add(villagerGroup);
+
+            // AI State for movement
+            villagerGroup.userData = {
+                type: 'villager',
+                color: color, // Main body color for map
+                targetPosition: new THREE.Vector3(x, y, z),
+                movementSpeed: 0.5 + Math.random() * 0.5, // Random speed
+                isMoving: false,
+                moveTimer: Math.random() * 5 // Timer to decide next move
+            };
+            villagers.push(villagerGroup);
+            // Also add a representation to worldObjects for static map drawing if needed
+             worldObjects.push({
+                 position: villagerGroup.position, // It will be updated, but map only draws initial pos
+                 userData: { type: 'villager_spawn', color: color } // Mark spawn point on map
+             });
+        }
+
+
+        function createWorld() {
+            // Ground
+            const groundSize = 100;
+            const groundGeometry = new THREE.PlaneGeometry(groundSize, groundSize);
+            groundGeometry.rotateX(-Math.PI / 2);
+            const groundMaterial = new THREE.MeshStandardMaterial({ color: 0x228B22, side: THREE.DoubleSide });
+            const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+            ground.receiveShadow = true;
+            scene.add(ground);
+            // Add ground representation for map
+            worldObjects.push({
+                position: new THREE.Vector3(0, 0, 0),
+                userData: { type: 'ground', color: 0x228B22, size: groundSize }
+            });
+
+            // --- Village Area ---
+            const villageCenterX = 10;
+            const villageCenterZ = 10;
+
+            createBuilding(villageCenterX - 5, 0, villageCenterZ - 5, 4, 3, 4, 0x8B4513);
+            createBuilding(villageCenterX + 5, 0, villageCenterZ + 5, 5, 4, 3, 0xD2B48C);
+            createFarm(villageCenterX + 8, 0, villageCenterZ - 8, 6, 8);
+            createTree(villageCenterX - 10, 0, villageCenterZ + 10);
+            createTree(villageCenterX + 15, 0, villageCenterZ - 5);
+            createTree(villageCenterX + 10, 0, villageCenterZ + 15);
+
+            // Flowers (Keep as simple blocks, add type)
+            addBlock(villageCenterX + 1, 0.05, villageCenterZ + 1, 0xFF0000, 0.2, 0.2, 0.2, 'flower');
+            addBlock(villageCenterX + 1.5, 0.05, villageCenterZ + 1.5, 0xFFFF00, 0.2, 0.2, 0.2, 'flower');
+            addBlock(villageCenterX + 0.5, 0.05, villageCenterZ + 2, 0xFF00FF, 0.2, 0.2, 0.2, 'flower');
+            addBlock(villageCenterX - 2, 0.05, villageCenterZ - 1, 0x00FFFF, 0.2, 0.2, 0.2, 'flower');
+
+            // Villagers (Use new function)
+            addVillager(villageCenterX + 3, 0, villageCenterZ, 0x4682B4); // Blue
+            addVillager(villageCenterX - 3, 0, villageCenterZ - 2, 0x800080); // Purple
+            addVillager(villageCenterX, 0, villageCenterZ + 4, 0x006400); // Dark Green
+        }
+
+        // --- Event Handlers ---
+        function onKeyDown(event) {
+             // Allow settings toggle even if pointer is locked or panel is open
+             if (event.code === 'KeyP') {
+                 toggleSettingsPanel();
+                 return; // Don't process other keys if toggling panel
+             }
+
+             // Don't process movement keys if panel is open or pointer not locked
+             if (isPanelOpen || !controls.isLocked) return;
+
+            switch (event.code) {
+                case 'KeyW': moveForward = true; break;
+                case 'KeyA': moveLeft = true; break;
+                case 'KeyS': moveBackward = true; break;
+                case 'KeyD': moveRight = true; break;
+            }
+        }
+
+        function onKeyUp(event) {
+             // Don't process movement keys if panel is open (they should already be false)
+             if (isPanelOpen) return;
+
+            switch (event.code) {
+                case 'KeyW': moveForward = false; break;
+                case 'KeyA': moveLeft = false; break;
+                case 'KeyS': moveBackward = false; break;
+                case 'KeyD': moveRight = false; break;
+            }
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            drawMap(); // Redraw map if needed on resize
+        }
+
+         // --- UI Update Functions ---
+        function updateCoordinates() {
+            const pos = controls.getObject().position;
+            coordsElement.textContent = `X: ${pos.x.toFixed(1)} Y: ${pos.y.toFixed(1)} Z: ${pos.z.toFixed(1)}`;
+        }
+
+        function updateCompass() {
+            // Get camera direction
+            camera.getWorldDirection(direction);
+            // Calculate angle in XZ plane (horizontal)
+            const angle = Math.atan2(direction.x, direction.z);
+            // Convert to degrees and adjust (0 degrees = North = -Z axis in Three.js)
+            const degrees = (angle * 180 / Math.PI);
+            compassNeedle.style.transform = `rotate(${degrees}deg)`;
+        }
+
+         function drawMap() {
+            mapCtx.clearRect(0, 0, mapSize, mapSize); // Clear map
+
+            // Background (optional dark fill)
+            mapCtx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+            mapCtx.fillRect(0, 0, mapSize, mapSize);
+
+            // Center map around player
+            const playerX = controls.getObject().position.x;
+            const playerZ = controls.getObject().position.z;
+            const mapCenterX = mapSize / 2;
+            const mapCenterY = mapSize / 2; // Map's Y axis represents world Z axis
+
+             // Function to convert world coords to map coords
+             function worldToMap(worldX, worldZ) {
+                 const mapX = mapCenterX + (worldX - playerX) * mapScale;
+                 const mapZ = mapCenterY + (worldZ - playerZ) * mapScale; // Z maps to Y on canvas
+                 return { x: mapX, y: mapZ };
+             }
+
+             // Draw world objects (static representation)
+             worldObjects.forEach(obj => {
+                 const data = obj.userData;
+                 const pos = obj.position;
+                 const mapPos = worldToMap(pos.x, pos.z);
+
+                 // Only draw if potentially visible on map
+                 if (mapPos.x > -10 && mapPos.x < mapSize + 10 && mapPos.y > -10 && mapPos.y < mapSize + 10) {
+                     mapCtx.fillStyle = `#${data.color.toString(16).padStart(6, '0')}`;
+                     mapCtx.strokeStyle = 'rgba(255, 255, 255, 0.5)'; // White outline
+                     mapCtx.lineWidth = 0.5;
+
+                     switch (data.type) {
+                        case 'building':
+                             const mapW = data.width * mapScale;
+                             const mapD = data.depth * mapScale;
+                             mapCtx.fillRect(mapPos.x - mapW / 2, mapPos.y - mapD / 2, mapW, mapD);
+                             mapCtx.strokeRect(mapPos.x - mapW / 2, mapPos.y - mapD / 2, mapW, mapD);
+                             break;
+                         case 'tree':
+                             const mapR = (data.radius || 1) * mapScale; // Use radius or default
+                             mapCtx.beginPath();
+                             mapCtx.arc(mapPos.x, mapPos.y, mapR, 0, Math.PI * 2);
+                             mapCtx.fill();
+                             // mapCtx.stroke(); // Optional outline for trees
+                             break;
+                         case 'farm':
+                            const farmW = data.width * mapScale;
+                            const farmD = data.depth * mapScale;
+                            mapCtx.fillStyle = `#${data.color.toString(16).padStart(6, '0')}80`; // Make farm semi-transparent
+                            mapCtx.fillRect(mapPos.x - farmW / 2, mapPos.y - farmD / 2, farmW, farmD);
+                            mapCtx.strokeRect(mapPos.x - farmW / 2, mapPos.y - farmD / 2, farmW, farmD);
+                            break;
+                        case 'villager_spawn': // Mark spawn point
+                            mapCtx.fillStyle = `#${data.color.toString(16).padStart(6, '0')}`;
+                            mapCtx.beginPath();
+                            mapCtx.arc(mapPos.x, mapPos.y, 2 * mapScale, 0, Math.PI * 2); // Small circle for spawn
+                            mapCtx.fill();
+                            break;
+                        // Add cases for flowers or other specific items if desired
+                     }
+                 }
+             });
+
+             // Draw Villagers (current positions)
+             villagers.forEach(villager => {
+                  const pos = villager.position;
+                  const mapPos = worldToMap(pos.x, pos.z);
+                  mapCtx.fillStyle = `#${villager.userData.color.toString(16).padStart(6, '0')}`;
+                  mapCtx.beginPath();
+                  mapCtx.arc(mapPos.x, mapPos.y, 1.5 * mapScale, 0, Math.PI * 2); // Slightly smaller circle for moving villagers
+                  mapCtx.fill();
+             });
+
+
+            // Draw Player (always at center)
+            mapCtx.fillStyle = 'red';
+            mapCtx.strokeStyle = 'white';
+            mapCtx.lineWidth = 1;
+            mapCtx.beginPath();
+            // Triangle representing player and direction
+            const playerAngle = Math.atan2(direction.x, direction.z); // Use same direction as compass
+            mapCtx.moveTo(mapCenterX + Math.sin(playerAngle) * 5, mapCenterY + Math.cos(playerAngle) * 5);
+            mapCtx.lineTo(mapCenterX + Math.sin(playerAngle + Math.PI * 0.8) * 4, mapCenterY + Math.cos(playerAngle + Math.PI * 0.8) * 4);
+            mapCtx.lineTo(mapCenterX + Math.sin(playerAngle - Math.PI * 0.8) * 4, mapCenterY + Math.cos(playerAngle - Math.PI * 0.8) * 4);
+            mapCtx.closePath();
+            mapCtx.fill();
+            mapCtx.stroke();
+        }
+
+         // --- Villager AI ---
+         function updateVillagers(delta) {
+             villagers.forEach(villager => {
+                 const data = villager.userData;
+                 data.moveTimer -= delta;
+
+                 if (data.moveTimer <= 0) {
+                     // Time to decide new action
+                     if (Math.random() < 0.6) { // 60% chance to move
+                         // Generate new target within bounds
+                         const targetX = villageBounds.minX + Math.random() * (villageBounds.maxX - villageBounds.minX);
+                         const targetZ = villageBounds.minZ + Math.random() * (villageBounds.maxZ - villageBounds.minZ);
+                         data.targetPosition.set(targetX, 0, targetZ); // Move on ground plane (y=0)
+                         data.isMoving = true;
+                         data.moveTimer = 3 + Math.random() * 5; // Move/wait for 3-8 seconds
+                         // Optional: Make villager look towards target (more complex)
+                     } else {
+                         // Stand still
+                         data.isMoving = false;
+                         data.moveTimer = 1 + Math.random() * 3; // Wait for 1-4 seconds
+                     }
+                 }
+
+                 if (data.isMoving) {
+                     const currentPos = villager.position;
+                     const targetPos = data.targetPosition;
+
+                     // Move towards target
+                     direction.subVectors(targetPos, currentPos); // Vector from current to target
+
+                     if (direction.lengthSq() > 0.1) { // Stop if very close
+                         direction.normalize();
+                         direction.multiplyScalar(data.movementSpeed * delta);
+                         villager.position.add(direction);
+                         // Basic ground clamp (ensure they don't float)
+                         villager.position.y = 0;
+                     } else {
+                         // Reached target
+                         data.isMoving = false;
+                         data.moveTimer = 0.1; // Immediately decide next action
+                     }
+                 }
+             });
+         }
+
+         // --- Settings Panel Toggle ---
+         function toggleSettingsPanel() {
+            isPanelOpen = !isPanelOpen;
+            settingsPanel.style.display = isPanelOpen ? 'block' : 'none';
+
+            if (isPanelOpen) {
+                 // Release mouse if locked
+                 if (controls.isLocked) {
+                     document.exitPointerLock(); // Request unlock
+                 }
+                 // Show instructions overlay while panel is open
+                 instructions.style.display = 'block';
+                 instructions.innerHTML = "Adjust Settings<br/>P or Close Button to resume"; // Change text
+                 crosshair.style.display = 'none'; // Hide crosshair
+             } else {
+                 // Try to re-lock controls when closing (user must click again usually)
+                 instructions.innerHTML = "Click to Play<br/>WASD: Move | MOUSE: Look | P: Settings | ESC: Release Mouse"; // Reset text
+                 // Don't automatically hide instructions here, wait for lock event
+                 // instructions.style.display = 'none'; // Re-hide instructions after closing? No, wait for click.
+             }
+         }
+
+
+        // --- Animation Loop ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const delta = clock.getDelta();
+
+            // Update Villager AI
+             updateVillagers(delta);
+
+            // Only process movement/camera if controls are locked AND panel is closed
+            if (controls.isLocked === true && !isPanelOpen) {
+                velocity.x -= velocity.x * 10.0 * delta;
+                velocity.z -= velocity.z * 10.0 * delta;
+
+                direction.z = Number(moveForward) - Number(moveBackward);
+                direction.x = Number(moveRight) - Number(moveLeft);
+                direction.normalize();
+
+                // Use configured player speed
+                if (moveForward || moveBackward) velocity.z -= direction.z * playerSpeed * delta * 60;
+                if (moveLeft || moveRight) velocity.x -= direction.x * playerSpeed * delta * 60;
+
+                controls.moveRight(-velocity.x * delta);
+                controls.moveForward(-velocity.z * delta);
+
+                // Ground clamp
+                if (controls.getObject().position.y < playerHeight) {
+                    controls.getObject().position.y = playerHeight;
+                }
+
+                 // Update UI elements that depend on player state
+                 updateCoordinates();
+                 updateCompass();
+                 drawMap(); // Redraw map every frame to show player/villager movement
+            } else if (!isPanelOpen && !controls.isLocked) {
+                 // If pointer not locked and panel is closed, ensure movement stops
+                 moveForward = moveBackward = moveLeft = moveRight = false;
+                 velocity.set(0,0,0);
+             }
+
+            renderer.render(scene, camera);
+        }
+
+        // --- Start the game ---
+        init();
+
+    </script>
+</body>
+</html>
